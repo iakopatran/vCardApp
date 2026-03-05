@@ -1,0 +1,70 @@
+# Build stage - use Debian-based image (Wasp requires glibc)
+FROM node:22-slim AS wasp-builder
+
+# Install dependencies for wasp
+RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# Install wasp CLI (version 0.18 for this project)
+RUN curl -sSL https://get.wasp.sh/installer.sh | sh -s -- -v 0.18.0
+ENV PATH="/root/.local/bin:$PATH"
+
+WORKDIR /app
+
+# Copy application files
+COPY . .
+
+# Replace Dummy email provider with SendGrid for production build
+RUN sed -i 's/provider: Dummy/provider: SendGrid/' main.wasp
+
+# Build the Wasp application
+RUN wasp build
+
+# Server build stage - compile the server bundle
+FROM node:22-slim AS server-builder
+
+RUN apt-get update && apt-get install -y python3 build-essential && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy source and wasp build output
+COPY --from=wasp-builder /app/src ./src
+COPY --from=wasp-builder /app/package.json .
+COPY --from=wasp-builder /app/package-lock.json .
+COPY --from=wasp-builder /app/tsconfig*.json ./
+COPY --from=wasp-builder /app/.wasp/build/server .wasp/build/server
+COPY --from=wasp-builder /app/.wasp/out/sdk .wasp/out/sdk
+COPY --from=wasp-builder /app/.wasp/build/db .wasp/build/db
+
+# Install dependencies
+RUN npm install && cd .wasp/build/server && npm install
+
+# Generate Prisma client
+RUN cd .wasp/build/server && npx prisma generate --schema='../db/schema.prisma'
+
+# Bundle the server
+RUN cd .wasp/build/server && npm run bundle
+
+# Production stage
+FROM node:22-slim
+
+RUN apt-get update && apt-get install -y python3 && rm -rf /var/lib/apt/lists/*
+
+ENV NODE_ENV=production
+
+WORKDIR /app
+
+# Copy node_modules for Prisma
+COPY --from=server-builder /app/node_modules ./node_modules
+# Copy server node_modules for dotenv
+COPY --from=server-builder /app/.wasp/build/server/node_modules .wasp/build/server/node_modules
+# Copy server bundle
+COPY --from=server-builder /app/.wasp/build/server/bundle .wasp/build/server/bundle
+COPY --from=server-builder /app/.wasp/build/server/package*.json .wasp/build/server/
+# Copy db schema
+COPY --from=server-builder /app/.wasp/build/db .wasp/build/db
+
+WORKDIR /app/.wasp/build/server
+
+EXPOSE 3001
+
+CMD ["npm", "run", "start-production"]

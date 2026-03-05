@@ -1,0 +1,3 @@
+admin dashboard
+viewing user info/how much they paid/ etc.
+min.io

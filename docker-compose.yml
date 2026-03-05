@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: vcard-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: vcard_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  server:
+    build:
+      context: ./app
+      dockerfile: Dockerfile.server
+    container_name: vcard-server
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/vcard_db
+      WASP_SERVER_URL: http://localhost:3001
+      WASP_WEB_CLIENT_URL: http://localhost:3000
+      JWT_SECRET: ${JWT_SECRET:-change-this-in-production}
+      # Add other env vars from .env.server
+    env_file:
+      - ./app/.env.server
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  client:
+    build:
+      context: ./app
+      dockerfile: Dockerfile.client
+    container_name: vcard-client
+    ports:
+      - "3000:80"
+    depends_on:
+      - server
+    restart: unless-stopped
+
+  tile-service:
+    build:
+      context: ./tile-service
+    container_name: tile-service
+    environment:
+      TILE_OUTPUT_DIR: "/tiles"
+      ALLOWED_ORIGINS: "http://localhost:3000,http://localhost:3001"
+    volumes:
+      - ./tiles:/tiles
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
